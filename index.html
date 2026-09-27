@@ -3,144 +3,69 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AURA Sensor Transmitter</title>
+  <title>AURA GPS Link</title>
   <style>
-    body { font-family: monospace; padding: 15px; background: #0f1117; color: #00ff66; }
-    button { padding: 12px; font-size: 15px; font-weight: bold; background: #00ff66; border: none; border-radius: 6px; width: 100%; margin: 6px 0; cursor: pointer; color: #000; }
-    .box { background: #1c1f26; padding: 12px; border-radius: 8px; margin-top: 10px; font-size: 13px; line-height: 1.5; }
-    #consoleLog { height: 120px; overflow-y: auto; color: #aaa; font-size: 11px; background: #000; padding: 8px; border-radius: 6px; margin-top: 10px; }
+    body { font-family: monospace; background: #0f172a; color: #38bdf8; padding: 20px; text-align: center; }
+    button { background: #38bdf8; color: #0f172a; border: none; padding: 14px 20px; font-weight: bold; border-radius: 8px; width: 100%; margin: 8px 0; font-size: 16px; }
+    .card { background: #1e293b; padding: 16px; border-radius: 10px; margin-top: 15px; font-size: 14px; text-align: left; }
   </style>
 </head>
 <body>
-  <h3>AURA Sensor Transmitter</h3>
-  
-  <button id="btnPerm" onclick="requestPermissions()">1. ENABLE SENSORS & GPS</button>
-  <button id="btnConnect" onclick="connectBLE()">2. CONNECT & TRANSMIT BLE</button>
+  <h2>AURA GPS Gateway</h2>
+  <button onclick="startGPS()">1. ACQUIRE GPS</button>
+  <button onclick="connectBLE()">2. CONNECT TO ESP32</button>
 
-  <div class="box">
-    <div>BLE Status: <b id="lblStatus">Disconnected</b></div>
-    <div>Packets Sent: <b id="lblCount">0</b></div>
-    <div>GPS: <span id="lblGPS">Acquiring...</span></div>
-    <div>Acc Z: <span id="lblZ">0.00</span> m/s²</div>
+  <div class="card">
+    <div>BLE: <b id="bleStatus" style="color:#ef4444">Disconnected</b></div>
+    <div>Packets: <span id="txCount">0</span></div>
+    <div>Lat: <span id="lat">0.000000</span></div>
+    <div>Lon: <span id="lon">0.000000</span></div>
+    <div>Speed: <span id="spd">0.0</span> km/h</div>
   </div>
-
-  <div id="consoleLog"></div>
 
   <script>
     const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
     const CHAR_UUID    = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+    let rxChar = null, lat = 0.0, lon = 0.0, spd = 0.0, count = 0;
 
-    let rxChar = null;
-    let lat = 0.0, lon = 0.0, speed = 0.0;
-    let ax = 0.0, ay = 0.0, az = 9.81;
-    let packetCount = 0;
-    let isBusyWriting = false;
-
-    function log(msg) {
-      const el = document.getElementById("consoleLog");
-      el.innerHTML += `<div>${new Date().toLocaleTimeString()} - ${msg}</div>`;
-      el.scrollTop = el.scrollHeight;
-    }
-
-    // Step 1: Request Geolocation & DeviceMotion permissions
-    function requestPermissions() {
-      // iOS 13+ permission flow
-      if (typeof DeviceMotionEvent.requestPermission === 'function') {
-        DeviceMotionEvent.requestPermission()
-          .then(perm => {
-            log("Motion permission: " + perm);
-            if (perm === 'granted') startSensors();
-          })
-          .catch(e => log("Motion permission error: " + e));
-      } else {
-        // Standard Android / Web standard
-        startSensors();
-      }
-
+    function startGPS() {
       if ("geolocation" in navigator) {
-        navigator.geolocation.watchPosition(
-          pos => {
-            lat = pos.coords.latitude;
-            lon = pos.coords.longitude;
-            speed = (pos.coords.speed || 0.0) * 3.6;
-            document.getElementById("lblGPS").innerText = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
-          },
-          err => log("GPS Error: " + err.message),
-          { enableHighAccuracy: true, timeout: 5000 }
-        );
-        log("GPS listener initiated.");
-      } else {
-        log("Geolocation API unavailable.");
+        navigator.geolocation.watchPosition(pos => {
+          lat = pos.coords.latitude;
+          lon = pos.coords.longitude;
+          spd = (pos.coords.speed || 0.0) * 3.6;
+          document.getElementById("lat").innerText = lat.toFixed(6);
+          document.getElementById("lon").innerText = lon.toFixed(6);
+          document.getElementById("spd").innerText = spd.toFixed(1);
+        }, err => alert(err.message), { enableHighAccuracy: true });
       }
     }
 
-    function startSensors() {
-      window.addEventListener('devicemotion', evt => {
-        const acc = evt.accelerationIncludingGravity || evt.acceleration;
-        if (acc) {
-          ax = acc.x || 0.0;
-          ay = acc.y || 0.0;
-          az = acc.z !== null ? acc.z : 9.81;
-          document.getElementById("lblZ").innerText = az.toFixed(2);
-        }
-      });
-      log("Motion listeners bound.");
-    }
-
-    // Step 2: Establish BLE Session
     async function connectBLE() {
       try {
-        log("Scanning for 'AURA_ESP32'...");
-        document.getElementById("lblStatus").innerText = "Scanning...";
-
         const device = await navigator.bluetooth.requestDevice({
           filters: [{ name: "AURA_ESP32" }],
           optionalServices: [SERVICE_UUID]
         });
-
-        device.addEventListener('gattserverdisconnected', () => {
-          document.getElementById("lblStatus").innerText = "Disconnected";
-          log("ESP32 disconnected!");
-        });
-
         const server = await device.gatt.connect();
-        log("Connected to GATT server.");
-
         const service = await server.getPrimaryService(SERVICE_UUID);
         rxChar = await service.getCharacteristic(CHAR_UUID);
+        document.getElementById("bleStatus").innerText = "Streaming Active";
+        document.getElementById("bleStatus").style.color = "#22c55e";
 
-        document.getElementById("lblStatus").innerText = "Streaming Active";
-        log("BLE Ready. Streaming at 100ms interval...");
-
-        // Stream every 100 ms (~10 Hz) to avoid packet pileups
-        setInterval(sendTelemetry, 100);
-
-      } catch (err) {
-        document.getElementById("lblStatus").innerText = "Failed";
-        log("BLE Error: " + err.message);
-      }
-    }
-
-    async function sendTelemetry() {
-      if (!rxChar || isBusyWriting) return;
-
-      const payload = `${lat.toFixed(6)},${lon.toFixed(6)},${speed.toFixed(1)},${ax.toFixed(2)},${ay.toFixed(2)},${az.toFixed(2)}\n`;
-      const enc = new TextEncoder().encode(payload);
-
-      try {
-        isBusyWriting = true;
-        if (rxChar.writeValueWithoutResponse) {
-          await rxChar.writeValueWithoutResponse(enc);
-        } else {
-          await rxChar.writeValue(enc);
-        }
-        packetCount++;
-        document.getElementById("lblCount").innerText = packetCount;
-      } catch (e) {
-        log("Tx drop: " + e.message);
-      } finally {
-        isBusyWriting = false;
-      }
+        // Stream GPS every 200ms
+        setInterval(async () => {
+          if (!rxChar) return;
+          const payload = `${lat.toFixed(6)},${lon.toFixed(6)},${spd.toFixed(1)}\n`;
+          const enc = new TextEncoder().encode(payload);
+          try {
+            if (rxChar.writeValueWithoutResponse) await rxChar.writeValueWithoutResponse(enc);
+            else await rxChar.writeValue(enc);
+            count++;
+            document.getElementById("txCount").innerText = count;
+          } catch(e) {}
+        }, 200);
+      } catch(err) { alert("BLE Error: " + err.message); }
     }
   </script>
 </body>
