@@ -1,182 +1,127 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ESP32 Phone GPS Sender</title>
-<style>
-  :root { --bg:#f4f5f7; --card:#fff; --fg:#14171a; --mut:#6b7280; --ok:#16a34a; --bad:#dc2626; --acc:#2563eb; --bd:#e2e5ea; }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg:#0f1115; --card:#181b21; --fg:#eceef1; --mut:#9aa3af; --bd:#2a2f38; --acc:#3b82f6; }
-  }
-  * { box-sizing: border-box; }
-  body { margin:0; padding:16px; background:var(--bg); color:var(--fg);
-         font:16px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-  main { max-width:480px; margin:0 auto; }
-  h1 { font-size:1.25rem; margin:4px 0 14px; }
-  .card { background:var(--card); border:1px solid var(--bd); border-radius:12px; padding:14px; margin-bottom:12px; }
-  button { width:100%; padding:14px; font-size:1rem; font-weight:600; border:0; border-radius:10px;
-           background:var(--acc); color:#fff; }
-  button.stop { background:var(--bad); }
-  button:disabled { opacity:.5; }
-  .row { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--bd); }
-  .row:last-child { border-bottom:0; }
-  .row span:first-child { color:var(--mut); }
-  .dot { display:inline-block; width:10px; height:10px; border-radius:50%; background:var(--bad); margin-right:6px; }
-  .dot.on { background:var(--ok); }
-  pre { margin:0; font-size:.75rem; max-height:150px; overflow:auto; white-space:pre-wrap; color:var(--mut); }
-  .warn { color:var(--bad); font-size:.9rem; }
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RoadMon V2V Client</title>
+    <style>
+        body { font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #121212; color: #ffffff; text-align: center; padding: 20px; }
+        h2 { color: #4CAF50; }
+        .card { background: #1e1e1e; padding: 20px; border-radius: 12px; margin: 20px auto; max-width: 400px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        .data-row { display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 1.1em; border-bottom: 1px solid #333; padding-bottom: 5px; }
+        .val { color: #03dac6; font-weight: bold; }
+        button { background-color: #bb86fc; color: #000; border: none; padding: 15px 30px; font-size: 1.2em; border-radius: 30px; font-weight: bold; width: 100%; cursor: pointer; transition: 0.3s; margin-top: 10px; }
+        button:active { transform: scale(0.95); }
+        #status { color: #cf6679; margin-top: 15px; font-size: 0.9em; }
+    </style>
 </head>
 <body>
-<main>
-  <h1>ESP32 Phone GPS Sender</h1>
+    <h2>RoadMon GPS Link</h2>
+    
+    <div class="card">
+        <div class="data-row"><span>Speed:</span> <span class="val" id="spd">0.0 km/h</span></div>
+        <div class="data-row"><span>Heading:</span> <span class="val" id="hdg">0.0°</span></div>
+        <div class="data-row"><span>Accuracy:</span> <span class="val" id="acc">0.0 m</span></div>
+        <div class="data-row" style="font-size: 0.9em; color:#aaa;"><span>Lat/Lon:</span> <span id="coords">Waiting...</span></div>
+    </div>
 
-  <div class="card">
-    <button id="btn">Connect to ESP32</button>
-    <p id="unsupported" class="warn" hidden>
-      Web Bluetooth is not available in this browser. Use Chrome on Android
-      (or the Bluefy browser on iPhone), and open this page over HTTPS.
-    </p>
-  </div>
+    <div class="card">
+        <button id="connectBtn">Connect to ESP32</button>
+        <div id="status">Disconnected</div>
+    </div>
 
-  <div class="card">
-    <div class="row"><span>Bluetooth</span><span><i class="dot" id="dBle"></i><b id="sBle">disconnected</b></span></div>
-    <div class="row"><span>GPS</span><span><i class="dot" id="dGps"></i><b id="sGps">waiting</b></span></div>
-    <div class="row"><span>Latitude</span><b id="lat">-</b></div>
-    <div class="row"><span>Longitude</span><b id="lon">-</b></div>
-    <div class="row"><span>Speed</span><b id="spd">-</b></div>
-    <div class="row"><span>Packets sent</span><b id="cnt">0</b></div>
-  </div>
+    <script>
+        const SERVICE_UUID = "12345678-1234-5678-1234-56789abcdef0";
+        const CHAR_UUID = "12345678-1234-5678-1234-56789abcdef1";
+        
+        let bleCharacteristic = null;
+        let watchId = null;
+        let wakeLock = null;
 
-  <div class="card"><pre id="log"></pre></div>
-</main>
+        const btn = document.getElementById('connectBtn');
+        const status = document.getElementById('status');
 
-<script>
-const SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
-const RX_CHAR = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
-const SEND_MS = 1000;      // ESP32 watchdog is 3 s, so send at least this often
-const MAX_AGE = 3000;      // don't send a fix older than this
+        // Request Screen Wakelock so phone doesn't sleep on dashboard
+        async function requestWakeLock() {
+            try {
+                wakeLock = await navigator.wakeLock.request('screen');
+            } catch (err) { console.log("WakeLock error:", err); }
+        }
 
-const $ = id => document.getElementById(id);
-let device = null, chr = null, pos = null, watchId = null, timer = null;
-let wake = null, busy = false, count = 0, wantConnected = false;
+        btn.addEventListener('click', async () => {
+            if (bleCharacteristic) return; // Already connected
+            
+            try {
+                status.innerText = "Requesting Bluetooth...";
+                status.style.color = "#bb86fc";
+                
+                const device = await navigator.bluetooth.requestDevice({
+                    filters: [{ name: 'RoadMon_ESP32' }],
+                    optionalServices: [SERVICE_UUID]
+                });
 
-function log(m) {
-  const t = new Date().toLocaleTimeString();
-  $('log').textContent = `${t}  ${m}\n` + $('log').textContent.slice(0, 2000);
-}
-function setBle(on, text) {
-  $('dBle').className = 'dot' + (on ? ' on' : '');
-  $('sBle').textContent = text;
-}
-function setGps(on, text) {
-  $('dGps').className = 'dot' + (on ? ' on' : '');
-  $('sGps').textContent = text;
-}
+                device.addEventListener('gattserverdisconnected', onDisconnect);
 
-// ---------- GPS ----------
-function startGps() {
-  if (watchId !== null) return;
-  watchId = navigator.geolocation.watchPosition(p => {
-    pos = p;
-    const c = p.coords;
-    $('lat').textContent = c.latitude.toFixed(6);
-    $('lon').textContent = c.longitude.toFixed(6);
-    $('spd').textContent = c.speed == null ? 'n/a' : (c.speed * 3.6).toFixed(1) + ' km/h';
-    setGps(true, 'locked');
-  }, e => {
-    setGps(false, e.code === 1 ? 'permission denied' : 'no fix');
-    log('GPS error: ' + e.message);
-  }, { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 });
-}
-function stopGps() {
-  if (watchId !== null) navigator.geolocation.clearWatch(watchId);
-  watchId = null; pos = null;
-  setGps(false, 'stopped');
-}
+                status.innerText = "Connecting to GATT Server...";
+                const server = await device.gatt.connect();
+                const service = await server.getPrimaryService(SERVICE_UUID);
+                bleCharacteristic = await service.getCharacteristic(CHAR_UUID);
+                
+                status.innerText = "Connected! Starting GPS...";
+                status.style.color = "#4CAF50";
+                btn.innerText = "Connected";
+                btn.style.backgroundColor = "#4CAF50";
+                
+                requestWakeLock();
+                startGPS();
+            } catch (error) {
+                status.innerText = "Error: " + error;
+                status.style.color = "#cf6679";
+            }
+        });
 
-// ---------- Send ----------
-async function sendPacket() {
-  if (!chr || !pos || busy) return;
-  if (Date.now() - pos.timestamp > MAX_AGE) return;     // stale/no lock: stay silent, ESP falls back
-  const c = pos.coords;
-  const spd = (c.speed == null || !isFinite(c.speed)) ? '' : c.speed.toFixed(2);   // m/s
-  const data = new TextEncoder().encode(`${c.latitude.toFixed(7)},${c.longitude.toFixed(7)},${spd}\n`);
-  busy = true;
-  try {
-    for (let i = 0; i < data.length; i += 20) {          // 20-byte chunks work on every MTU
-      const part = data.slice(i, i + 20);
-      if (chr.writeValueWithoutResponse) await chr.writeValueWithoutResponse(part);
-      else await chr.writeValue(part);
-    }
-    $('cnt').textContent = ++count;
-  } catch (e) {
-    log('Write failed: ' + e.message);
-  } finally { busy = false; }
-}
+        function onDisconnect() {
+            status.innerText = "Disconnected from ESP32";
+            status.style.color = "#cf6679";
+            btn.innerText = "Reconnect";
+            btn.style.backgroundColor = "#bb86fc";
+            bleCharacteristic = null;
+            if (watchId) navigator.geolocation.clearWatch(watchId);
+            if (wakeLock) wakeLock.release();
+        }
 
-// ---------- Bluetooth ----------
-async function openGatt() {
-  const server = await device.gatt.connect();
-  const svc = await server.getPrimaryService(SERVICE);
-  chr = await svc.getCharacteristic(RX_CHAR);
-  setBle(true, 'connected');
-  log('Connected to ' + (device.name || 'ESP32'));
-}
+        function startGPS() {
+            if (!("geolocation" in navigator)) {
+                status.innerText = "Geolocation not supported!";
+                return;
+            }
 
-async function onDisconnected() {
-  chr = null;
-  setBle(false, 'disconnected');
-  log('Bluetooth disconnected');
-  for (let i = 1; wantConnected && i <= 10; i++) {      // auto-reconnect
-    setBle(false, `reconnecting (${i})`);
-    try { await openGatt(); return; }
-    catch (e) { await new Promise(r => setTimeout(r, Math.min(1000 * i, 5000))); }
-  }
-  if (wantConnected) { log('Reconnect gave up'); disconnect(); }
-}
+            watchId = navigator.geolocation.watchPosition(
+                (position) => {
+                    const lat = position.coords.latitude;
+                    const lon = position.coords.longitude;
+                    const spd = position.coords.speed || 0;     // meters per sec
+                    const hdg = position.coords.heading || 0;   // degrees
+                    const acc = position.coords.accuracy;       // meters
 
-async function connect() {
-  try {
-    $('btn').disabled = true;
-    device = await navigator.bluetooth.requestDevice({ filters: [{ services: [SERVICE] }] });
-    device.addEventListener('gattserverdisconnected', onDisconnected);
-    wantConnected = true;
-    setBle(false, 'connecting');
-    await openGatt();
-    startGps();
-    timer = setInterval(sendPacket, SEND_MS);
-    try { wake = await navigator.wakeLock.request('screen'); } catch (e) {}
-    $('btn').textContent = 'Disconnect';
-    $('btn').className = 'stop';
-  } catch (e) {
-    log('Connect failed: ' + e.message);
-    wantConnected = false;
-    setBle(false, 'disconnected');
-  } finally { $('btn').disabled = false; }
-}
+                    // Update UI
+                    document.getElementById('coords').innerText = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+                    document.getElementById('spd').innerText = `${(spd * 3.6).toFixed(1)} km/h`;
+                    document.getElementById('hdg').innerText = `${hdg.toFixed(1)}°`;
+                    document.getElementById('acc').innerText = `±${acc.toFixed(1)} m`;
 
-function disconnect() {
-  wantConnected = false;
-  clearInterval(timer); timer = null;
-  stopGps();
-  if (device && device.gatt.connected) device.gatt.disconnect();
-  if (wake) { wake.release().catch(() => {}); wake = null; }
-  chr = null;
-  setBle(false, 'disconnected');
-  $('btn').textContent = 'Connect to ESP32';
-  $('btn').className = '';
-}
-
-document.addEventListener('visibilitychange', async () => {   // re-acquire wake lock when returning
-  if (document.visibilityState === 'visible' && wantConnected && !wake) {
-    try { wake = await navigator.wakeLock.request('screen'); } catch (e) {}
-  }
-});
-
-$('btn').onclick = () => (wantConnected ? disconnect() : connect());
-if (!navigator.bluetooth) { $('btn').disabled = true; $('unsupported').hidden = false; }
-</script>
+                    // Send to ESP32 if connected
+                    if (bleCharacteristic) {
+                        const csvPayload = `${lat},${lon},${spd},${hdg},${acc}`;
+                        const encoder = new TextEncoder();
+                        // writeValueWithoutResponse is ultra-fast, no ACKs required
+                        bleCharacteristic.writeValueWithoutResponse(encoder.encode(csvPayload)).catch(err => console.log(err));
+                    }
+                },
+                (error) => { console.log(error); },
+                { enableHighAccuracy: true, maximumAge: 0 }
+            );
+        }
+    </script>
 </body>
 </html>
